@@ -1077,7 +1077,7 @@
         var ref = input.value.trim();
         if (!online || !canWrite) return;
         btn.disabled = true;
-        sb.req('leads?code=eq.' + encodeURIComponent(code), {method:'PATCH', headers:{Prefer:'return=minimal'},
+        sb.req('indice_leads?code=eq.' + encodeURIComponent(code), {method:'PATCH', headers:{Prefer:'return=minimal'},
             body: JSON.stringify({crm_ref: ref, crm_status: ref ? 'vinculado' : 'pendente'})})
           .then(function(){ toast(ref ? 'Lead vinculado ao CRM' : 'Vínculo removido'); return loadAll(); })
           .catch(function(e){ handleErr(e, 'Não foi possível atualizar o CRM'); })
@@ -1189,8 +1189,8 @@
         decisor: byId('in_decisor').value, consent_nome: byId('in_consentNome').checked,
         area_id: area.id, area_label: area.label, score: score, stage_name: stageName};
       if (!existed) leadRow.origem = 'painel';
-      await sb.req('leads?on_conflict=code', Object.assign({}, upsert, {body: JSON.stringify([leadRow])}));
-      await sb.req('insights?on_conflict=code', Object.assign({}, upsert, {body: JSON.stringify([{
+      await sb.req('indice_leads?on_conflict=code', Object.assign({}, upsert, {body: JSON.stringify([leadRow])}));
+      await sb.req('indice_insights?on_conflict=code', Object.assign({}, upsert, {body: JSON.stringify([{
         code: code, area_id: area.id, area_label: area.label,
         setor: byId('in_setor').value, faturamento: byId('in_fat').value, equipe: byId('in_equipe').value,
         prioridade: byId('in_prioridade').value, decisor: byId('in_decisor').value,
@@ -1236,7 +1236,7 @@
   function showBanner(kind){
     var b = byId('banner');
     if (kind === 'off'){
-      b.innerHTML = '<div class="banner">'+IC.alert+'<p>Painel ainda não conectado ao banco de dados.<span>Preencha a URL e a chave do Supabase no bloco BACKEND do arquivo para ver os leads de verdade.</span></p>'+
+      b.innerHTML = '<div class="banner">'+IC.alert+'<p>Painel ainda não conectado ao banco de dados.<span>Falta a chave pública (anon) do Supabase no bloco BACKEND do arquivo para ver os leads de verdade.</span></p>'+
         '<button class="btn btn-ghost btn-sm" id="demoBtn">Ver com dados de exemplo</button></div>';
       byId('demoBtn').onclick = function(){
         demo = true; leadsAnimated = false; var d = demoData(); leadsDocs = d.leads; insightsDocs = d.insights;
@@ -1255,7 +1255,7 @@
      A chave "anon" é pública por natureza; quem protege os dados são as
      regras do banco (supabase/setup.sql): sem login, nada é lido.
      ===================================================================== */
-  var BACKEND = { url: "", anonKey: "" };
+  var BACKEND = { url: "https://tzvzitojpbqflgqcoxra.supabase.co", anonKey: "" };
   var SESSION_KEY = 'painelIndice.sessao';
   var POLL_MS = 20000;
 
@@ -1323,8 +1323,8 @@
   async function loadAll(){
     if (loading) return; loading = true;
     try{
-      var L = await sb.req('leads?select=*&order=created_at.desc&limit=1000');
-      var N = await sb.req('insights?select=*&order=created_at.desc&limit=5000');
+      var L = await sb.req('indice_leads?select=*&order=created_at.desc&limit=1000');
+      var N = await sb.req('indice_insights?select=*&order=created_at.desc&limit=5000');
       var fresh = (L || []).map(leadDoc);
       if (knownCodes){
         var novos = fresh.filter(function(d){ return !knownCodes[d.code]; });
@@ -1361,6 +1361,13 @@
     setTimeout(function(){ (byId('lg_email').value ? byId('lg_pass') : byId('lg_email')).focus(); }, 60);
   }
   async function enter(){
+    // só quem está na lista indice_equipe usa o painel (o projeto Supabase é compartilhado com o CRM)
+    var ok = await sb.req('rpc/indice_tem_acesso', {method:'POST', body:'{}'});
+    if (ok !== true){
+      sb.logout();
+      showLogin('Este usuário não tem acesso ao painel. Peça para incluir seu e-mail na lista do time.');
+      return;
+    }
     byId('login').hidden = true; document.body.classList.remove('locked');
     online = true; canWrite = true; demo = false; showBanner('');
     setAccess('edit', sb.session.email || 'conectado');

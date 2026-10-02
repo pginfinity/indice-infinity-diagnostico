@@ -754,7 +754,7 @@
   /* Banco de dados (Supabase). URL do projeto e chave pública "anon" — a chave anon
      é feita para ficar no site: ela só permite chamar submit_diagnostico().
      Vazio = o quiz funciona normalmente, mas não grava (ex.: arquivo aberto no PC). */
-  var BACKEND = { url: "", anonKey: "" };
+  var BACKEND = { url: "https://tzvzitojpbqflgqcoxra.supabase.co", anonKey: "" };
   /* CRM da AI Infinity: recebe um evento com tudo o que o lead preencheu,
      assim que ele pede para ver o diagnóstico. */
   var CRM_WEBHOOK = "https://tzvzitojpbqflgqcoxra.supabase.co/functions/v1/leads?t=diag_9e8c951485f23237ef694a395be21fa5";
@@ -1809,7 +1809,7 @@
       dims: getDimensionScores().map(function(d){ return {label:d.label, score:d.score}; }),
       gargalo: gargaloLabels()
     };
-    fetch(BACKEND.url.replace(/\/$/, '') + '/rest/v1/rpc/submit_diagnostico', {
+    fetch(BACKEND.url.replace(/\/$/, '') + '/rest/v1/rpc/indice_submit', {
       method:'POST', keepalive:true,
       headers:{'apikey':BACKEND.anonKey, 'Authorization':'Bearer ' + BACKEND.anonKey, 'Content-Type':'application/json'},
       body: JSON.stringify({p: payload})
