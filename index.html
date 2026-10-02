@@ -751,6 +751,10 @@
      ===================================================================== */
   var WA_NUMBER = "5511915520061";
   var STORE_KEY = "indiceInfinity.v2";
+  /* Banco de dados (Supabase). URL do projeto e chave pública "anon" — a chave anon
+     é feita para ficar no site: ela só permite chamar submit_diagnostico().
+     Vazio = o quiz funciona normalmente, mas não grava (ex.: arquivo aberto no PC). */
+  var BACKEND = { url: "", anonKey: "" };
   /* Mídia gerada no Higgsfield (opcional). Deixe "" para usar só o fundo Aurora.
      Veja a seção "Higgsfield" no INSTRUCOES_Sistema_Indice_Infinity.md. */
   var MEDIA = {
@@ -1132,7 +1136,7 @@
      ===================================================================== */
   function freshState(){
     return { step:-1, area:null, answers:{}, gargalo:[], contact:{nome:'',empresa:'',cargo:'',email:'',whatsapp:''},
-      consentAgregado:false, consentNome:false, code:null, finishedAt:null };
+      consentAgregado:false, consentNome:false, code:null, finishedAt:null, sentAt:null };
   }
   var state = freshState();
   try{
@@ -1656,6 +1660,7 @@
         }
       }
       state.code = reportCode();   // gerado no envio: guarda as respostas finais
+      state.sentAt = null;
       go(STEP_CALC, 'up');
     };
     $('contactForm').onsubmit = function(e){ e.preventDefault(); $('nextBtn').click(); };
@@ -1772,9 +1777,36 @@
       rings + axes + '<polygon class="area" points="'+poly+'"/>' + dots + labels + '</svg>';
   }
 
+  /* Grava o diagnóstico no banco assim que o resultado existe. Não trava a tela:
+     se falhar (sem internet), tenta de novo na próxima vez que o relatório abrir. */
+  var sending = false;
+  function sendLead(){
+    if (!BACKEND.url || !BACKEND.anonKey || !state.code || state.sentAt || sending) return;
+    sending = true;
+    var score = computeScore(), stage = stageFor(score), a = state.answers, c = state.contact;
+    function ans(id){ return a[id] ? a[id].label : ''; }
+    var payload = {
+      code: state.code, nome: c.nome.trim(), empresa: c.empresa.trim(), cargo: c.cargo.trim(),
+      email: c.email.trim(), whatsapp: c.whatsapp.trim(),
+      area_id: state.area, area_label: areaLabel(), score: score, stage_name: stage.name,
+      decisor: ans('decisor'), consent_nome: !!state.consentNome, consent_agregado: !!state.consentAgregado,
+      setor: ans('setor'), faturamento: ans('faturamento'), equipe: ans('equipe'), prioridade: ans('prioridade'),
+      dims: getDimensionScores().map(function(d){ return {label:d.label, score:d.score}; }),
+      gargalo: gargaloLabels()
+    };
+    fetch(BACKEND.url.replace(/\/$/, '') + '/rest/v1/rpc/submit_diagnostico', {
+      method:'POST', keepalive:true,
+      headers:{'apikey':BACKEND.anonKey, 'Authorization':'Bearer ' + BACKEND.anonKey, 'Content-Type':'application/json'},
+      body: JSON.stringify({p: payload})
+    }).then(function(res){
+      if (res.ok){ state.sentAt = new Date().toISOString(); persist(); }
+    }).catch(function(){}).then(function(){ sending = false; });
+  }
+
   function renderResult(){
     setStage('report');
     if (!state.area || !state.code){ state = freshState(); persist(); return go(-1); }
+    sendLead();
     var score = computeScore(), stage = stageFor(score), sIdx = stageIndex(score), dims = getDimensionScores();
     var fronts = pickFronts();
     var empresa = state.contact.empresa.trim() || 'a sua operação';
