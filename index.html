@@ -755,6 +755,9 @@
      é feita para ficar no site: ela só permite chamar submit_diagnostico().
      Vazio = o quiz funciona normalmente, mas não grava (ex.: arquivo aberto no PC). */
   var BACKEND = { url: "", anonKey: "" };
+  /* CRM da AI Infinity: recebe um evento com tudo o que o lead preencheu,
+     assim que ele pede para ver o diagnóstico. */
+  var CRM_WEBHOOK = "https://tzvzitojpbqflgqcoxra.supabase.co/functions/v1/leads?t=diag_9e8c951485f23237ef694a395be21fa5";
   /* Mídia gerada no Higgsfield (opcional). Deixe "" para usar só o fundo Aurora.
      Veja a seção "Higgsfield" no INSTRUCOES_Sistema_Indice_Infinity.md. */
   var MEDIA = {
@@ -1136,7 +1139,8 @@
      ===================================================================== */
   function freshState(){
     return { step:-1, area:null, answers:{}, gargalo:[], contact:{nome:'',empresa:'',cargo:'',email:'',whatsapp:''},
-      consentAgregado:false, consentNome:false, code:null, finishedAt:null, sentAt:null };
+      consentAgregado:false, consentNome:false, code:null, finishedAt:null, sentAt:null, crmSentAt:null,
+      utm: (typeof state !== "undefined" && state && state.utm) || null };   // a origem da visita sobrevive a um recomeço
   }
   var state = freshState();
   try{
@@ -1150,6 +1154,15 @@
   if (state.step === STEP_CALC) state.step = STEP_RESULT;
   if (state.step > STEP_RESULT || state.step < -1) state.step = -1;
   if (state.step >= 0 && state.step <= STEP_CONTACT) state.step = -1;
+
+  /* origem da visita (UTMs, gclid, fbclid): guarda a primeira, vai junto para o CRM */
+  (function captureUtm(){
+    try{
+      var qs = new URLSearchParams(location.search), utm = {};
+      ['utm_source','utm_medium','utm_campaign','utm_term','utm_content','gclid','fbclid'].forEach(function(k){ var v = qs.get(k); if (v) utm[k] = v.slice(0, 200); });
+      if (Object.keys(utm).length && !state.utm){ utm.landing = location.href.split('#')[0].slice(0, 500); utm.referrer = (document.referrer || '').slice(0, 300); state.utm = utm; persist(); }
+    }catch(e){}
+  })();
 
   var app = document.getElementById('app');
   var page = document.getElementById('page');
@@ -1660,7 +1673,9 @@
         }
       }
       state.code = reportCode();   // gerado no envio: guarda as respostas finais
-      state.sentAt = null;
+      state.sentAt = null; state.crmSentAt = null;
+      state.finishedAt = state.finishedAt || new Date().toISOString();
+      sendCrm();
       go(STEP_CALC, 'up');
     };
     $('contactForm').onsubmit = function(e){ e.preventDefault(); $('nextBtn').click(); };
@@ -1803,10 +1818,72 @@
     }).catch(function(){}).then(function(){ sending = false; });
   }
 
+  /* Evento "diagnostico_concluido" para o CRM. Campos de contato no topo
+     (nome, email, telefone, empresa...) e o diagnóstico completo em seguida.
+     Se a rede falhar, tenta de novo na próxima vez que o relatório abrir. */
+  var crmSending = false;
+  function crmPayload(){
+    var score = computeScore(), stage = stageFor(score), a = state.answers, c = state.contact;
+    function ans(id){ return a[id] ? a[id].label : ''; }
+    var digits = c.whatsapp.replace(/\D/g, '');
+    var dims = getDimensionScores();
+    var respostas = questionsNow().map(function(q){
+      return {pergunta: q.title, resposta: q.type === 'multi' ? gargaloLabels().join('; ') : ans(q.id)};
+    });
+    var fronts = pickFronts().map(function(f){ return f.n; });
+    var resumo = [
+      'Diagnóstico Índice Infinity ' + state.code,
+      'Placar: ' + score + '/100 · ' + stage.name + ' (estágio ' + (stageIndex(score)+1) + ' de 5)',
+      'Área: ' + areaLabel() + ' · Setor: ' + ans('setor') + ' · Faturamento: ' + ans('faturamento') + ' · Equipe: ' + ans('equipe'),
+      'Prioridade 12 meses: ' + ans('prioridade') + ' · Quem decide: ' + ans('decisor'),
+      'Dimensões: ' + dims.map(function(d){ return d.label + ' ' + d.score; }).join(' · '),
+      'Gargalos: ' + (gargaloLabels().join('; ') || '—'),
+      'Frentes recomendadas: ' + fronts.join('; ')
+    ].join('\n');
+    return {
+      evento: 'diagnostico_concluido',
+      origem: 'diagnostico.iainfinity.com.br',
+      data: state.finishedAt || new Date().toISOString(),
+      codigo: state.code,
+      nome: c.nome.trim(),
+      email: c.email.trim(),
+      telefone: digits ? (digits.length <= 11 ? '55' + digits : digits) : '',
+      whatsapp: c.whatsapp.trim(),
+      empresa: c.empresa.trim(),
+      cargo: c.cargo.trim(),
+      area: areaLabel(),
+      setor: ans('setor'),
+      faturamento: ans('faturamento'),
+      equipe: ans('equipe'),
+      prioridade: ans('prioridade'),
+      decisor: ans('decisor'),
+      placar: score,
+      estagio: stage.name,
+      estagio_numero: stageIndex(score) + 1,
+      dimensoes: dims.map(function(d){ return {dimensao: d.label, pergunta: d.title, resposta: d.answer, pontos: d.score}; }),
+      gargalos: gargaloLabels(),
+      frentes_recomendadas: fronts,
+      respostas: respostas,
+      consentimento_estudo_anonimo: !!state.consentAgregado,
+      consentimento_divulgar_empresa: !!state.consentNome,
+      utm: state.utm || {},
+      pagina: location.href.split('#')[0],
+      resumo: resumo
+    };
+  }
+  function sendCrm(){
+    if (!CRM_WEBHOOK || !state.code || state.crmSentAt || crmSending) return;
+    crmSending = true;
+    fetch(CRM_WEBHOOK, {method:'POST', keepalive:true, headers:{'Content-Type':'application/json'}, body: JSON.stringify(crmPayload())})
+      .then(function(res){ if (res.ok){ state.crmSentAt = new Date().toISOString(); persist(); } })
+      .catch(function(){})
+      .then(function(){ crmSending = false; });
+  }
+
   function renderResult(){
     setStage('report');
     if (!state.area || !state.code){ state = freshState(); persist(); return go(-1); }
-    sendLead();
+    sendLead(); sendCrm();
     var score = computeScore(), stage = stageFor(score), sIdx = stageIndex(score), dims = getDimensionScores();
     var fronts = pickFronts();
     var empresa = state.contact.empresa.trim() || 'a sua operação';
