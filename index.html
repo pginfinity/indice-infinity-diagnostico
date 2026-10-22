@@ -1202,6 +1202,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var rgb = t < 0.5 ? mix([214,72,72],[238,92,42], t*2) : mix([238,92,42],[246,180,60], (t-0.5)*2);
     return alpha != null ? 'rgba('+rgb[0]+','+rgb[1]+','+rgb[2]+','+alpha+')' : 'rgb('+rgb[0]+','+rgb[1]+','+rgb[2]+')';
   }
+  /* Funil no Google Tag Manager: cada passo vira um evento no dataLayer (sem dados pessoais).
+     No GTM, crie gatilhos do tipo "Evento personalizado" com estes nomes. */
+  function track(name, extra){
+    try{ window.dataLayer = window.dataLayer || []; window.dataLayer.push(Object.assign({event: name}, extra || {})); }catch(e){}
+  }
   function toast(msg){
     var t = $('toast'); t.innerHTML = I.check + '<span>'+esc(msg)+'</span>'; t.classList.add('show');
     clearTimeout(toast._t); toast._t = setTimeout(function(){ t.classList.remove('show'); }, 2200);
@@ -1328,7 +1333,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (state.area && !state.finishedAt && Object.keys(state.answers).length){
       go(Object.keys(leadErrors()).length ? STEP_LEAD : Math.min(countAnswered(), TOTAL_Q)); return;
     }
-    state = freshState(); go(STEP_LEAD);
+    state = freshState(); track('diagnostico_comecou'); go(STEP_LEAD);
   }
 
   function render(dir){
@@ -1471,7 +1476,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     $('startBtn2').onclick = startFresh;
     var rb = $('resumeBtn'); if (rb) rb.onclick = startFresh;
     var sr = $('seeResult'); if (sr) sr.onclick = function(){ go(STEP_RESULT, 'up'); };
-    var rs = $('restartBtn'); if (rs) rs.onclick = function(){ state = freshState(); go(STEP_LEAD); };
+    var rs = $('restartBtn'); if (rs) rs.onclick = function(){ state = freshState(); track('diagnostico_comecou'); go(STEP_LEAD); };
   }
 
   /* ---------------- trilha de etapas (stepper) ---------------- */
@@ -1514,6 +1519,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   function renderQuestion(dir){
     setStage('narrow');
     if (!Object.keys(leadErrors()).length) sendStart();
+    track('diagnostico_pergunta', {pergunta: state.step + 1});
     var qs = questionsNow();
     if (state.step >= qs.length){ state.step = 0; }
     var q = qs[state.step];
@@ -1708,6 +1714,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     bindBack();
     var f = wireForm({nome:'f_nome', email:'f_email', whatsapp:'f_whats'}, leadErrors, ['nome','email','whatsapp'], function(){
       sendStart();
+      track('diagnostico_lead', {lead_id: state.leadId || ''});
       go(Math.min(countAnswered(), TOTAL_Q));
     });
     $('nextBtn').onclick = f.submit;
@@ -1749,6 +1756,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       state.sentAt = null; state.crmSentAt = null;
       state.finishedAt = state.finishedAt || new Date().toISOString();
       sendCrm();
+      var sc = computeScore();
+      track('diagnostico_concluido', {lead_id: state.leadId || '', area: state.area || '', placar: sc, estagio: stageFor(sc).name});
       go(STEP_CALC, 'up');
     });
     $('c_agregado').onchange = function(e){ state.consentAgregado = e.target.checked; touched.consent = true; $('chkA').classList.toggle('on', e.target.checked); persist(); f.paint(false); };
@@ -2101,7 +2110,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     });
 
     $('copyCode').onclick = function(){ copyText(state.code, 'Código copiado'); };
-    var dl = $('dlBtn'); dl.onclick = function(){ downloadReport(dl); };
+    var dl = $('dlBtn'); dl.onclick = function(){ track('diagnostico_pdf'); downloadReport(dl); };
+    [$('waBtn'), dock.querySelector('a')].forEach(function(a){ if (a) a.addEventListener('click', function(){ track('diagnostico_whatsapp'); }); });
     var rs = $('restartBtn');
     rs.onclick = function(){
       if (!rs.dataset.armed){
