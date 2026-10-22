@@ -707,7 +707,7 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
     .form{grid-template-columns:1fr}
     .qcard{padding:20px 16px 18px;border-radius:24px}
     .stepper-names{display:none}
-    .stepper{grid-template-columns:1fr 3fr 5fr 3fr 1fr!important}
+    .stepper{grid-template-columns:1fr 1fr 3fr 5fr 3fr 1fr!important}
     .curve-labels div{font-size:11px}
     .curve-labels div:not(.on) span{display:none}
     .dock{display:block}
@@ -1138,6 +1138,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     {name:'Prioridades', size:3}
   ];
   var TOTAL_Q = 12;
+  /* trilha completa: contato no início, empresa e autorizações no fim */
+  var JOURNEY = [{name:'Você', size:1}].concat(SECTIONS, [{name:'Finalizar', size:1}]);
 
   function buildQuestionsForArea(areaId){
     var gargaloQ = {id:'gargalo', label:'GARGALO', title:'Quais desses processos mais consomem tempo do time hoje?',
@@ -1149,9 +1151,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
      ESTADO (salvo neste navegador para retomar de onde parou)
      ===================================================================== */
   function freshState(){
-    return { step:-1, area:null, answers:{}, gargalo:[], contact:{nome:'',empresa:'',cargo:'',email:'',whatsapp:''},
+    // contato, lead_id e origem da visita sobrevivem a um recomeço (a mesma pessoa refazendo)
+    var prev = (typeof state !== "undefined" && state) || null, pc = (prev && prev.contact) || {};
+    return { step:-1, area:null, answers:{}, gargalo:[],
+      contact:{nome:pc.nome||'', empresa:pc.empresa||'', cargo:pc.cargo||'', email:pc.email||'', whatsapp:pc.whatsapp||''},
       consentAgregado:false, consentNome:false, code:null, finishedAt:null, sentAt:null, crmSentAt:null,
-      utm: (typeof state !== "undefined" && state && state.utm) || null };   // a origem da visita sobrevive a um recomeço
+      leadId:(prev && prev.leadId) || null, leadSentFor:(prev && prev.leadSentFor) || null,
+      utm:(prev && prev.utm) || null };
   }
   var state = freshState();
   try{
@@ -1161,10 +1167,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   function persist(){ try{ localStorage.setItem(STORE_KEY, JSON.stringify(state)); }catch(e){} }
   function questionsNow(){ return state.area ? buildQuestionsForArea(state.area) : [areaQuestion]; }
 
-  var STEP_CONTACT = TOTAL_Q, STEP_CALC = TOTAL_Q + 1, STEP_RESULT = TOTAL_Q + 2;
+  /* etapas: -2 contato (início) · -1 abertura · 0–11 perguntas · 12 empresa e autorizações · 13 calculando · 14 relatório */
+  var STEP_LEAD = -2, STEP_CONTACT = TOTAL_Q, STEP_CALC = TOTAL_Q + 1, STEP_RESULT = TOTAL_Q + 2;
   if (state.step === STEP_CALC) state.step = STEP_RESULT;
-  if (state.step > STEP_RESULT || state.step < -1) state.step = -1;
-  if (state.step >= 0 && state.step <= STEP_CONTACT) state.step = -1;
+  if (state.step > STEP_RESULT || state.step < STEP_LEAD) state.step = -1;
+  if (state.step === STEP_LEAD || (state.step >= 0 && state.step <= STEP_CONTACT)) state.step = -1;
 
   /* origem da visita (UTMs, gclid, fbclid): guarda a primeira, vai junto para o CRM */
   (function captureUtm(){
@@ -1297,9 +1304,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
   function updateChrome(){
     var s = state.step, pct = 0;
-    if (s < 0){ counterEl.textContent = ''; pct = 0; }
-    else if (s < TOTAL_Q){ counterEl.innerHTML = '<b>'+pad2(s+1)+'</b> / '+TOTAL_Q; pct = (s/(TOTAL_Q+1))*100; }
-    else if (s === STEP_CONTACT){ counterEl.textContent = 'Último passo'; pct = (TOTAL_Q/(TOTAL_Q+1))*100; }
+    if (s === STEP_LEAD){ counterEl.textContent = 'Antes de começar'; pct = 3; }
+    else if (s < 0){ counterEl.textContent = ''; pct = 0; }
+    else if (s < TOTAL_Q){ counterEl.innerHTML = '<b>'+pad2(s+1)+'</b> / '+TOTAL_Q; pct = ((s+1)/(TOTAL_Q+2))*100; }
+    else if (s === STEP_CONTACT){ counterEl.textContent = 'Último passo'; pct = ((TOTAL_Q+1)/(TOTAL_Q+2))*100; }
     else if (s === STEP_CALC){ counterEl.textContent = 'Calculando'; pct = 100; }
     else { counterEl.textContent = 'Seu relatório'; pct = 0; }
     navProgress.style.width = pct + '%';
@@ -1317,15 +1325,18 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     render(dir || 'fwd');
   }
   function startFresh(){
-    if (state.area && !state.finishedAt && Object.keys(state.answers).length){ go(Math.min(countAnswered(), TOTAL_Q)); return; }
-    state = freshState(); go(0);
+    if (state.area && !state.finishedAt && Object.keys(state.answers).length){
+      go(Object.keys(leadErrors()).length ? STEP_LEAD : Math.min(countAnswered(), TOTAL_Q)); return;
+    }
+    state = freshState(); go(STEP_LEAD);
   }
 
   function render(dir){
     updateChrome();
     calcTimers.forEach(clearTimeout); calcTimers = [];
     window.scrollTo(0, 0);
-    if (state.step === -1) renderIntro();
+    if (state.step === STEP_LEAD) renderLead(dir);
+    else if (state.step === -1) renderIntro();
     else if (state.step < TOTAL_Q) renderQuestion(dir);
     else if (state.step === STEP_CONTACT) renderContact(dir);
     else if (state.step === STEP_CALC) renderCalc();
@@ -1418,8 +1429,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<div class="b-card glass spot b-steps">'+
           '<span class="b-kicker">3 passos · 4 minutos</span><h3>Do clique ao plano, sem formulário longo</h3>'+
           '<div class="steps">'+
-            '<div class="step"><span class="step-n">01</span><b>Escolha a sua área</b><span>As perguntas se ajustam ao que ela enfrenta</span></div>'+
-            '<div class="step"><span class="step-n">02</span><b>Responda com um toque</b><span>12 perguntas sobre o dia a dia real</span></div>'+
+            '<div class="step"><span class="step-n">01</span><b>Diga quem é você</b><span>Nome, e-mail e WhatsApp, em 20 segundos</span></div>'+
+            '<div class="step"><span class="step-n">02</span><b>Responda com um toque</b><span>12 perguntas que se ajustam à sua área</span></div>'+
             '<div class="step"><span class="step-n">03</span><b>Receba o relatório</b><span>Placar, estágio e frentes de IA</span></div>'+
           '</div>'+
         '</div>'+
@@ -1441,7 +1452,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '</section>'+
 
       '<section class="final-cta glass beam">'+
-        '<div><h3>Pronto para ver o seu placar?</h3><p>Leva 4 minutos. Seus dados de contato só são pedidos no final.</p></div>'+
+        '<div><h3>Pronto para ver o seu placar?</h3><p>Leva 4 minutos e o resultado sai na hora, com o plano para a sua operação.</p></div>'+
         '<button class="btn btn-shine" id="startBtn2">'+(inProgress ? 'Continuar diagnóstico' : 'Começar agora')+' <span class="ico">'+I.arrow+'</span></button>'+
       '</section>'+
       '<div class="foot"><span>AI Infinity Global Company · AI Enabled Service</span><span>iainfinity.com.br · (11) 91552-0061</span></div>';
@@ -1460,22 +1471,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     $('startBtn2').onclick = startFresh;
     var rb = $('resumeBtn'); if (rb) rb.onclick = startFresh;
     var sr = $('seeResult'); if (sr) sr.onclick = function(){ go(STEP_RESULT, 'up'); };
-    var rs = $('restartBtn'); if (rs) rs.onclick = function(){ state = freshState(); go(0); };
+    var rs = $('restartBtn'); if (rs) rs.onclick = function(){ state = freshState(); go(STEP_LEAD); };
   }
 
   /* ---------------- trilha de etapas (stepper) ---------------- */
-  function sectionOf(stepIdx){
+  // j = posição na jornada: 0 contato · 1–12 perguntas · 13 empresa e autorizações
+  function sectionOf(j){
     var acc = 0;
-    for (var i=0;i<SECTIONS.length;i++){
-      if (stepIdx < acc + SECTIONS[i].size) return {i:i, pos:stepIdx-acc};
-      acc += SECTIONS[i].size;
+    for (var i=0;i<JOURNEY.length;i++){
+      if (j < acc + JOURNEY[i].size) return {i:i, pos:j-acc};
+      acc += JOURNEY[i].size;
     }
-    return {i:SECTIONS.length, pos:0};
+    return {i:JOURNEY.length-1, pos:0};
   }
-  function headHtml(stepIdx, showBack){
-    var cur = sectionOf(stepIdx);
-    var all = SECTIONS.concat([{name:'Contato', size:1}]);
-    var cols = 'grid-template-columns:'+all.map(function(s){ return 'minmax(64px,'+s.size+'fr)'; }).join(' ');
+  function headHtml(j, showBack){
+    var cur = sectionOf(j), all = JOURNEY;
+    var cols = 'grid-template-columns:'+all.map(function(s){ return 'minmax(84px,'+s.size+'fr)'; }).join(' ');
     var segs = '', names = '';
     all.forEach(function(s, i){
       var fill = i < cur.i ? 100 : (i === cur.i ? Math.max(8, (cur.pos / s.size) * 100) : 0);
@@ -1483,20 +1494,26 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       segs += '<div class="seg '+cls+'"><i style="width:'+fill+'%"></i></div>';
       names += '<span class="'+cls+'">'+esc(s.name)+'</span>';
     });
-    var secName = all[Math.min(cur.i, all.length-1)].name;
-    var secPos = cur.i < SECTIONS.length ? (' · '+(cur.pos+1)+' de '+SECTIONS[cur.i].size) : '';
+    var sec = all[cur.i];
+    var secPos = sec.size > 1 ? (' · '+(cur.pos+1)+' de '+sec.size) : '';
     return '<div class="qhead">'+
-        (showBack ? '<button class="btn-text" id="backBtn" aria-label="Voltar para a pergunta anterior">'+I.back+' Voltar</button>' : '<span></span>')+
-        '<span class="sec"><b>'+esc(secName)+'</b>'+secPos+'</span>'+
+        (showBack ? '<button class="btn-text" id="backBtn" aria-label="Voltar para a etapa anterior">'+I.back+' Voltar</button>' : '<span></span>')+
+        '<span class="sec"><b>'+esc(sec.name)+'</b>'+secPos+'</span>'+
       '</div>'+
-      '<div class="stepper" style="'+cols+'" role="progressbar" aria-valuemin="0" aria-valuemax="'+TOTAL_Q+'" aria-valuenow="'+stepIdx+'" aria-label="Progresso do diagnóstico">'+segs+'</div>'+
+      '<div class="stepper" style="'+cols+'" role="progressbar" aria-valuemin="0" aria-valuemax="'+(TOTAL_Q+1)+'" aria-valuenow="'+j+'" aria-label="Progresso do diagnóstico">'+segs+'</div>'+
       '<div class="stepper-names" style="'+cols+'" aria-hidden="true">'+names+'</div>';
   }
-  function bindBack(){ var bb = $('backBtn'); if (bb) bb.onclick = function(){ go(state.step - 1, 'back'); }; }
+  function prevStep(){
+    if (state.step === STEP_LEAD) return -1;
+    if (state.step === 0) return STEP_LEAD;
+    return state.step - 1;
+  }
+  function bindBack(){ var bb = $('backBtn'); if (bb) bb.onclick = function(){ go(prevStep(), 'back'); }; }
 
   /* ---------------- perguntas ---------------- */
   function renderQuestion(dir){
     setStage('narrow');
+    if (!Object.keys(leadErrors()).length) sendStart();
     var qs = questionsNow();
     if (state.step >= qs.length){ state.step = 0; }
     var q = qs[state.step];
@@ -1526,7 +1543,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
     app.innerHTML =
       '<div class="qcard glass beam">'+
-        headHtml(state.step, state.step > 0)+
+        headHtml(state.step + 1, true)+
         '<span class="qnum">Pergunta '+(state.step+1)+' de '+TOTAL_Q+'</span>'+
         '<h1 class="qtitle" id="qtitle" tabindex="-1">'+blurWords(q.title, 0, .025)+'</h1>'+
         (q.sub ? '<p class="qsub fade-up" style="animation-delay:.15s">'+esc(q.sub)+'</p>' : '')+
@@ -1587,15 +1604,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     advanceTimer = setTimeout(function(){ go(state.step + 1); }, 380);
   }
 
-  /* ---------------- contato ---------------- */
+  /* ---------------- formulários: contato no início, empresa no fim ---------------- */
   var touched = {};
-  function fieldErrors(){
+  function phoneDigits(v){ return String(v || '').replace(/\D/g, ''); }
+  function leadErrors(){
     var c = state.contact, e = {};
     if (c.nome.trim().length < 2) e.nome = 'Informe seu nome.';
-    if (c.empresa.trim().length < 2) e.empresa = 'Informe o nome da empresa.';
     if (!/^\S+@\S+\.\S{2,}$/.test(c.email.trim())) e.email = c.email.trim() ? 'Confira o e-mail: parece incompleto.' : 'Informe seu e-mail.';
-    var digits = c.whatsapp.replace(/\D/g,'');
-    if (digits && (digits.length < 10 || digits.length > 13)) e.whatsapp = 'Use DDD + número, ex.: (11) 91234-5678.';
+    var d = phoneDigits(c.whatsapp);
+    if (!d) e.whatsapp = 'Informe seu WhatsApp com DDD.';
+    else if (d.length < 10 || d.length > 11) e.whatsapp = 'Use DDD + número, ex.: (11) 91234-5678.';
+    return e;
+  }
+  function finalErrors(){
+    var c = state.contact, e = {};
+    if (c.empresa.trim().length < 2) e.empresa = 'Informe o nome da empresa.';
+    if (c.cargo.trim().length < 2) e.cargo = 'Informe seu cargo.';
     if (!state.consentAgregado) e.consent = 'Precisamos dessa autorização para gerar o diagnóstico.';
     return e;
   }
@@ -1606,32 +1630,107 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (d.length <= 10) return '('+d.slice(0,2)+') '+d.slice(2,6)+'-'+d.slice(6);
     return '('+d.slice(0,2)+') '+d.slice(2,7)+'-'+d.slice(7);
   }
+  function fieldHtml(key, id, label, type, ph, opts){
+    opts = opts || {};
+    return '<div class="field'+(opts.full?' full':'')+'" data-key="'+key+'">'+
+      '<label for="'+id+'">'+label+'</label>'+
+      '<input id="'+id+'" type="'+type+'" value="'+esc(state.contact[key])+'" placeholder="'+ph+'" autocomplete="'+(opts.ac||'off')+'"'+
+        (opts.inputmode?' inputmode="'+opts.inputmode+'"':'')+' aria-describedby="'+id+'_msg">'+
+      '<div class="msg" id="'+id+'_msg" role="alert">'+I.alert+'<span></span></div></div>';
+  }
+  /* liga campos ao estado; erros aparecem depois do primeiro blur ou ao tentar avançar */
+  function wireForm(map, errorsFn, order, onOk){
+    function paint(showAll){
+      var errs = errorsFn();
+      Object.keys(map).concat(['consent']).forEach(function(k){
+        var wrap = app.querySelector('.field[data-key="'+k+'"]'); if (!wrap) return;
+        var show = (showAll || touched[k]) && errs[k];
+        wrap.classList.toggle('invalid', !!show);
+        if (map[k]){
+          wrap.classList.toggle('valid', !errs[k] && !!state.contact[k].trim() && !!touched[k]);
+          $(map[k]).setAttribute('aria-invalid', show ? 'true' : 'false');
+        }
+        wrap.querySelector('.msg span').textContent = show ? errs[k] : '';
+      });
+      var ca = $('chkA'); if (ca) ca.classList.toggle('invalid', !!((showAll || touched.consent) && errs.consent));
+      return errs;
+    }
+    function submit(){
+      var errs = paint(true);
+      for (var n=0;n<order.length;n++){
+        var k = order[n];
+        if (errs[k]){
+          var target = k === 'consent' ? $('c_agregado') : $(map[k]);
+          target.focus(); (k === 'consent' ? $('chkA') : target).scrollIntoView({behavior: reduceMotion()?'auto':'smooth', block:'center'});
+          return;
+        }
+      }
+      onOk();
+    }
+    Object.keys(map).forEach(function(k){
+      var el = $(map[k]);
+      el.addEventListener('input', function(){
+        if (k === 'whatsapp'){ el.value = maskPhone(el.value); }
+        state.contact[k] = el.value; persist();
+        if (touched[k]) paint(false);
+      });
+      el.addEventListener('blur', function(){ if (el.value.trim()){ touched[k] = true; } paint(false); });
+      el.addEventListener('keydown', function(e){ if (e.key === 'Enter'){ e.preventDefault(); submit(); } });
+    });
+    return {paint:paint, submit:submit};
+  }
+  function focusFirstEmpty(ids){
+    setTimeout(function(){
+      if (!window.matchMedia('(pointer:fine)').matches) return;
+      for (var n=0;n<ids.length;n++){ var el = $(ids[n]); if (el && !el.value){ el.focus(); return; } }
+    }, 420);
+  }
 
-  function renderContact(dir){
+  /* ---------- início: nome, e-mail e WhatsApp ---------- */
+  function renderLead(dir){
     setStage('narrow');
     touched = {};
-    var c = state.contact;
-    function field(key, id, label, type, ph, opts){
-      opts = opts || {};
-      return '<div class="field'+(opts.full?' full':'')+'" data-key="'+key+'">'+
-        '<label for="'+id+'">'+label+(opts.optional?' <em>opcional</em>':'')+'</label>'+
-        '<input id="'+id+'" type="'+type+'" value="'+esc(c[key])+'" placeholder="'+ph+'" autocomplete="'+(opts.ac||'off')+'"'+
-          (opts.inputmode?' inputmode="'+opts.inputmode+'"':'')+' aria-describedby="'+id+'_msg">'+
-        '<div class="msg" id="'+id+'_msg" role="alert">'+I.alert+'<span></span></div></div>';
-    }
     app.innerHTML =
       '<div class="qcard glass beam">'+
-        headHtml(TOTAL_Q, true)+
+        headHtml(0, true)+
+        '<span class="qnum">Antes de começar</span>'+
+        '<h1 class="qtitle" id="qtitle" tabindex="-1">'+blurWords('Para quem vamos preparar o diagnóstico?', 0, .03)+'</h1>'+
+        '<p class="qsub fade-up" style="animation-delay:.15s">São só 3 campos. Depois vêm 12 perguntas de um toque, e o seu placar sai na hora.</p>'+
+        '<form class="form" id="leadForm" novalidate>'+
+          fieldHtml('nome','f_nome','Nome','text','Seu nome',{ac:'name',full:true})+
+          fieldHtml('email','f_email','E-mail','email','voce@empresa.com.br',{ac:'email',inputmode:'email'})+
+          fieldHtml('whatsapp','f_whats','WhatsApp','tel','(11) 91234-5678',{ac:'tel',inputmode:'tel'})+
+        '</form>'+
+        '<div class="form-actions"><span class="form-note">'+I.lock+'Usamos seus dados só para enviar o resultado e falar com você sobre ele.</span>'+
+          '<button class="btn btn-shine" id="nextBtn" type="button">Começar as perguntas <span class="ico">'+I.arrow+'</span></button></div>'+
+      '</div>';
+    animIn(dir);
+    bindBack();
+    var f = wireForm({nome:'f_nome', email:'f_email', whatsapp:'f_whats'}, leadErrors, ['nome','email','whatsapp'], function(){
+      sendStart();
+      go(Math.min(countAnswered(), TOTAL_Q));
+    });
+    $('nextBtn').onclick = f.submit;
+    $('leadForm').onsubmit = function(e){ e.preventDefault(); f.submit(); };
+    focusFirstEmpty(['f_nome','f_email','f_whats']);
+  }
+
+  /* ---------- fim: empresa, cargo e autorizações ---------- */
+  function renderContact(dir){
+    if (Object.keys(leadErrors()).length){ go(STEP_LEAD, 'back'); return; }   // sem contato, volta para o início
+    setStage('narrow');
+    touched = {};
+    var first = state.contact.nome.trim().split(/\s+/)[0] || '';
+    app.innerHTML =
+      '<div class="qcard glass beam">'+
+        headHtml(TOTAL_Q + 1, true)+
         '<div class="teaser"><div class="teaser-num" aria-hidden="true"><div><b>'+computeScore()+'</b></div>'+I.lock+'</div>'+
-          '<p>Seu diagnóstico está pronto.<span>Diga para quem ele é e liberamos o placar, o estágio e as frentes recomendadas.</span></p></div>'+
-        '<h1 class="qtitle" id="qtitle" tabindex="-1" style="margin-top:28px">'+blurWords('Para quem é o diagnóstico?', 0, .04)+'</h1>'+
-        '<p class="qsub">Leva 30 segundos. Usamos esses dados só para identificar o relatório e, se você quiser, conversar sobre ele.</p>'+
+          '<p>Seu diagnóstico está pronto.<span>Falta só dizer de qual empresa ele é para liberarmos o placar, o estágio e as frentes recomendadas.</span></p></div>'+
+        '<h1 class="qtitle" id="qtitle" tabindex="-1" style="margin-top:28px">'+blurWords((first ? first + ', só' : 'Só') + ' mais dois campos', 0, .04)+'</h1>'+
+        '<p class="qsub">Com isso, o relatório sai personalizado para a sua empresa.</p>'+
         '<form class="form" id="contactForm" novalidate>'+
-          field('nome','f_nome','Nome','text','Seu nome',{ac:'name'})+
-          field('empresa','f_empresa','Empresa','text','Nome da empresa',{ac:'organization'})+
-          field('cargo','f_cargo','Cargo','text','Ex.: Diretora comercial',{ac:'organization-title',optional:true})+
-          field('email','f_email','E-mail','email','voce@empresa.com.br',{ac:'email',inputmode:'email'})+
-          field('whatsapp','f_whats','WhatsApp','tel','(11) 91234-5678',{ac:'tel',inputmode:'tel',optional:true,full:true})+
+          fieldHtml('empresa','f_empresa','Empresa','text','Nome da empresa',{ac:'organization'})+
+          fieldHtml('cargo','f_cargo','Cargo','text','Ex.: Diretora comercial',{ac:'organization-title'})+
         '</form>'+
         '<div class="consents">'+
           '<label class="check'+(state.consentAgregado?' on':'')+'" id="chkA"><input type="checkbox" id="c_agregado" '+(state.consentAgregado?'checked':'')+'>'+
@@ -1645,52 +1744,18 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '</div>';
     animIn(dir);
     bindBack();
-
-    var map = {nome:'f_nome', empresa:'f_empresa', cargo:'f_cargo', email:'f_email', whatsapp:'f_whats'};
-    function paint(showAll){
-      var errs = fieldErrors();
-      Object.keys(map).concat(['consent']).forEach(function(k){
-        var wrap = app.querySelector('.field[data-key="'+k+'"]'); if (!wrap) return;
-        var show = (showAll || touched[k]) && errs[k];
-        wrap.classList.toggle('invalid', !!show);
-        if (k !== 'consent'){
-          wrap.classList.toggle('valid', !errs[k] && !!state.contact[k].trim() && !!touched[k]);
-          $(map[k]).setAttribute('aria-invalid', show ? 'true' : 'false');
-        }
-        wrap.querySelector('.msg span').textContent = show ? errs[k] : '';
-      });
-      $('chkA').classList.toggle('invalid', !!((showAll || touched.consent) && errs.consent));
-      return errs;
-    }
-    Object.keys(map).forEach(function(k){
-      var el = $(map[k]);
-      el.addEventListener('input', function(){
-        if (k === 'whatsapp'){ el.value = maskPhone(el.value); }
-        state.contact[k] = el.value; persist();
-        if (touched[k]) paint(false);
-      });
-      el.addEventListener('blur', function(){ if (el.value.trim()){ touched[k] = true; } paint(false); });
-    });
-    $('c_agregado').onchange = function(e){ state.consentAgregado = e.target.checked; touched.consent = true; $('chkA').classList.toggle('on', e.target.checked); persist(); paint(false); };
-    $('c_nome').onchange = function(e){ state.consentNome = e.target.checked; $('chkN').classList.toggle('on', e.target.checked); persist(); };
-    $('nextBtn').onclick = function(){
-      var errs = paint(true);
-      var order = ['nome','empresa','email','whatsapp','consent'];
-      for (var i=0;i<order.length;i++){
-        if (errs[order[i]]){
-          var target = order[i] === 'consent' ? $('c_agregado') : $(map[order[i]]);
-          target.focus(); (order[i]==='consent' ? $('chkA') : target).scrollIntoView({behavior: reduceMotion()?'auto':'smooth', block:'center'});
-          return;
-        }
-      }
+    var f = wireForm({empresa:'f_empresa', cargo:'f_cargo'}, finalErrors, ['empresa','cargo','consent'], function(){
       state.code = reportCode();   // gerado no envio: guarda as respostas finais
       state.sentAt = null; state.crmSentAt = null;
       state.finishedAt = state.finishedAt || new Date().toISOString();
       sendCrm();
       go(STEP_CALC, 'up');
-    };
-    $('contactForm').onsubmit = function(e){ e.preventDefault(); $('nextBtn').click(); };
-    setTimeout(function(){ var f = $('f_nome'); if (f && !f.value && window.matchMedia('(pointer:fine)').matches) f.focus(); }, 420);
+    });
+    $('c_agregado').onchange = function(e){ state.consentAgregado = e.target.checked; touched.consent = true; $('chkA').classList.toggle('on', e.target.checked); persist(); f.paint(false); };
+    $('c_nome').onchange = function(e){ state.consentNome = e.target.checked; $('chkN').classList.toggle('on', e.target.checked); persist(); };
+    $('nextBtn').onclick = f.submit;
+    $('contactForm').onsubmit = function(e){ e.preventDefault(); f.submit(); };
+    focusFirstEmpty(['f_empresa','f_cargo']);
   }
 
   /* ---------------- calculando ---------------- */
@@ -1832,7 +1897,34 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   /* Evento "diagnostico_concluido" para o CRM. Campos de contato no topo
      (nome, email, telefone, empresa...) e o diagnóstico completo em seguida.
      Se a rede falhar, tenta de novo na próxima vez que o relatório abrir. */
-  var crmSending = false;
+  var crmSending = false, startSending = false;
+  /* Evento "diagnostico_iniciado": sai quando a pessoa preenche nome, e-mail e WhatsApp,
+     para o CRM receber também quem não termina. Não reenvia para o mesmo e-mail + WhatsApp. */
+  function sendStart(){
+    var c = state.contact, key = c.email.trim().toLowerCase() + '|' + phoneDigits(c.whatsapp);
+    if (!CRM_WEBHOOK || state.leadSentFor === key || startSending) return;
+    if (!state.leadId) state.leadId = 'L-' + Date.now().toString(36).toUpperCase() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase();
+    persist();
+    var d = phoneDigits(c.whatsapp);
+    var payload = {
+      evento: 'diagnostico_iniciado',
+      origem: 'diagnostico.iainfinity.com.br',
+      data: new Date().toISOString(),
+      lead_id: state.leadId,
+      nome: c.nome.trim(),
+      email: c.email.trim(),
+      telefone: d ? (d.length <= 11 ? '55' + d : d) : '',
+      whatsapp: c.whatsapp.trim(),
+      utm: state.utm || {},
+      pagina: location.href.split('#')[0],
+      resumo: 'Lead começou o Índice Infinity de Maturidade em IA (ainda não concluiu). Se concluir, chega um evento diagnostico_concluido com o mesmo lead_id.'
+    };
+    startSending = true;
+    fetch(CRM_WEBHOOK, {method:'POST', keepalive:true, headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)})
+      .then(function(res){ if (res.ok){ state.leadSentFor = key; persist(); } })
+      .catch(function(){})
+      .then(function(){ startSending = false; });
+  }
   function crmPayload(){
     var score = computeScore(), stage = stageFor(score), a = state.answers, c = state.contact;
     function ans(id){ return a[id] ? a[id].label : ''; }
@@ -1853,6 +1945,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     ].join('\n');
     return {
       evento: 'diagnostico_concluido',
+      lead_id: state.leadId || '',
       origem: 'diagnostico.iainfinity.com.br',
       data: state.finishedAt || new Date().toISOString(),
       codigo: state.code,
@@ -2374,7 +2467,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (e.key === 'Enter'){ var nb = $('nextBtn'); if (nb && !nb.disabled){ e.preventDefault(); nb.click(); } return; }
     }
     if (state.step === -1 && e.key === 'Enter' && document.activeElement === document.body){ e.preventDefault(); startFresh(); return; }
-    if ((e.key === 'Escape' || e.key === 'Backspace') && state.step > 0 && state.step <= STEP_CONTACT){
+    if ((e.key === 'Escape' || e.key === 'Backspace') && state.step >= 0 && state.step <= STEP_CONTACT){
       var bb = $('backBtn'); if (bb){ e.preventDefault(); bb.click(); }
     }
   });
